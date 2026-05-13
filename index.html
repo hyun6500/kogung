@@ -2726,22 +2726,55 @@ async function openBookModal(book){
   const content = document.getElementById('bmContent');
   if (!overlay || !content) return;
 
-  // 즉시 기본 정보 표시
-  content.dataset.bookIdx = String(book.idx);
-  content.innerHTML = renderModalBody(book, null, /*loading*/ true);
+  const myIdx = String(book.idx);
+  content.dataset.bookIdx = myIdx;
+
+  // 초기 렌더 (loading=true)
+  try {
+    content.innerHTML = renderModalBody(book, null, /*loading*/ true);
+  } catch (err) {
+    console.error('[modal] 초기 렌더 실패:', err);
+    return;
+  }
   overlay.classList.add('open');
   overlay.setAttribute('aria-hidden','false');
   document.body.style.overflow = 'hidden';
 
-  // 메타정보 fetch
-  if (book.link) {
-    const meta = await fetchBookMeta(book.link);
-    // 모달이 닫혔거나 다른 책으로 바뀌었으면 갱신 안 함
-    if (overlay.classList.contains('open') && content.dataset.bookIdx === String(book.idx)) {
-      content.innerHTML = renderModalBody(book, meta, false);
+  // link 없으면 즉시 loading 종료
+  if (!book.link) {
+    try { content.innerHTML = renderModalBody(book, null, false); } catch(_){}
+    return;
+  }
+
+  // 메타정보 fetch (10초 timeout, 에러 안전)
+  let meta = null;
+  try {
+    meta = await Promise.race([
+      fetchBookMeta(book.link),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('메타 fetch 타임아웃 (10초)')), 10000))
+    ]);
+    console.log('[modal] meta loaded:', book.title, meta);
+  } catch (err) {
+    console.warn('[modal] meta fetch 실패:', book.title, err.message);
+    meta = null;
+  }
+
+  // 모달이 닫혔거나 다른 책으로 바뀌었으면 갱신 안 함
+  if (!overlay.classList.contains('open')) return;
+  if (content.dataset.bookIdx !== myIdx) return;
+
+  // 갱신 렌더 (loading=false) — meta가 null이어도 무조건 갱신해서 "불러오는 중" 제거
+  try {
+    content.innerHTML = renderModalBody(book, meta, /*loading*/ false);
+  } catch (err) {
+    console.error('[modal] 갱신 렌더 실패, fallback 사용:', err);
+    // fallback: meta 무시하고 기본 정보만
+    try {
+      content.innerHTML = renderModalBody(book, null, false);
+    } catch(_) {
+      // 최후의 보루: DOM에서 "불러오는 중" 직접 제거
+      content.querySelectorAll('.bm-meta-grid').forEach(g => g.remove());
     }
-  } else {
-    content.innerHTML = renderModalBody(book, null, false);
   }
 }
 
@@ -2793,9 +2826,13 @@ function renderModalBody(book, meta, loading){
   if (meta?.pages) metaItems.push(['쪽수', `${meta.pages}쪽`]);
   if (meta?.price) metaItems.push(['정가', fmtKRW(meta.price)]);
   if (meta?.isbn) metaItems.push(['ISBN', meta.isbn]);
-  if (meta?.rating) {
-    const stars = '★'.repeat(Math.round(meta.rating)) + '☆'.repeat(5 - Math.round(meta.rating));
-    metaItems.push(['평점', `${stars} ${meta.rating.toFixed(1)}${meta.ratingCount?` (${meta.ratingCount})`:''}`]);
+  if (meta?.rating != null) {
+    const ratingNum = Number(meta.rating);
+    if (!isNaN(ratingNum)) {
+      const r = Math.max(0, Math.min(5, Math.round(ratingNum)));
+      const stars = '★'.repeat(r) + '☆'.repeat(5 - r);
+      metaItems.push(['평점', `${stars} ${ratingNum.toFixed(1)}${meta.ratingCount?` (${meta.ratingCount})`:''}`]);
+    }
   }
 
   // 참석자 / 완독자 칩
