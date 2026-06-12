@@ -1116,9 +1116,11 @@ function parseData(rawData, links){
   }).filter(r => r.title || r.date || r.theme);
 
   ALL_EVENTS = rows;
-  BOOKS = rows.filter(r => r.title && !r.isExtra && r.session);
-  // TBR: 제목은 있는데 날짜도 회차도 없는 행 = 다음에 읽을 책
-  TBR = rows.filter(r => r.title && !r.date && !r.session);
+  const hasNo = r => r.no != null && r.no !== '';
+  // 정식 도서 = 제목 + 정규 회차 + (날짜 또는 no) — 초창기 날짜 미기록 책도 포함
+  BOOKS = rows.filter(r => r.title && !r.isExtra && r.session && (r.date || hasNo(r)));
+  // TBR = 제목은 있는데 날짜도 no도 없는 행 (회차·링크 유무 무관)
+  TBR = rows.filter(r => r.title && !r.date && !hasNo(r));
 
   CATEGORIES = [...new Set(BOOKS.map(b=>b.category).filter(Boolean))].sort();
   HOSTS = [...new Set(BOOKS.map(b=>b.host).filter(Boolean))].sort();
@@ -1144,7 +1146,7 @@ function parseExtra(extra){
 
   // 와이드 시트 공통 파서: [no, 도서명, 호스트, 멤버A, 멤버B, ...] 구조
   function parseWideSheet(rows) {
-    if (!Array.isArray(rows) || rows.length < 2) return {};
+    if (!Array.isArray(rows) || rows.length < 2) return { map: {}, members: [] };
     const head = rows[0].map(h => String(h||'').trim());
     const memberCols = [];
     for (let i = 3; i < head.length; i++) {
@@ -1161,12 +1163,48 @@ function parseExtra(extra){
         map[no][name] = val;
       });
     });
-    return map;
+    return { map, members: memberCols.map(c => c.name) };
   }
+
+  const byNoEarly = {};
+  BOOKS.forEach(b => { if (b.no != null) byNoEarly[Math.floor(b.no)] = b; });
+  const memberUnion = new Set(MEMBER_NAMES);
+
+  // ── 출석 탭: [no, 도서명, 호스트, 멤버...] — 참석/불참 ──
+  if (Array.isArray(extra.attendance) && extra.attendance.length > 1) {
+    const { map, members } = parseWideSheet(extra.attendance);
+    members.forEach(n => memberUnion.add(n));
+    if (members.length) HAS_ATTENDANCE = true;
+    Object.entries(map).forEach(([no, memberMap]) => {
+      const b = byNoEarly[Number(no)];
+      if (!b) return;
+      Object.entries(memberMap).forEach(([member, val]) => {
+        b.attendance[member] = parseAttendance(val);
+      });
+      b.attCount = Object.values(b.attendance).filter(v=>v===true).length;
+      b.attendees = Object.entries(b.attendance).filter(([_,v])=>v===true).map(([n])=>n);
+    });
+  }
+
+  // ── 완독 탭: [no, 도서명, 호스트, 멤버...] — 1 / 0.5 / '완독' 등 ──
+  if (Array.isArray(extra.completion) && extra.completion.length > 1) {
+    const { map, members } = parseWideSheet(extra.completion);
+    members.forEach(n => memberUnion.add(n));
+    if (members.length) HAS_COMPLETION = true;
+    Object.entries(map).forEach(([no, memberMap]) => {
+      const b = byNoEarly[Number(no)];
+      if (!b) return;
+      Object.entries(memberMap).forEach(([member, val]) => {
+        b.completion[member] = parseCompletion(val);
+      });
+    });
+  }
+
+  MEMBER_NAMES = [...memberUnion];
 
   // ── 한줄평 탭: [no, 도서명, 호스트, 멤버...] ──
   if (Array.isArray(extra.reviews) && extra.reviews.length > 1) {
-    const map = parseWideSheet(extra.reviews);
+    const { map } = parseWideSheet(extra.reviews);
     if (Object.keys(map).length) {
       HAS_REVIEWS = true;
       Object.entries(map).forEach(([no, memberMap]) => {
@@ -1181,7 +1219,7 @@ function parseExtra(extra){
 
   // ── 사진 탭: [no, 도서명, 호스트, 멤버...] — 셀에 URL(쉼표/줄바꿈 구분) ──
   if (Array.isArray(extra.photos) && extra.photos.length > 1) {
-    const map = parseWideSheet(extra.photos);
+    const { map } = parseWideSheet(extra.photos);
     Object.entries(map).forEach(([no, memberMap]) => {
       const allPhotos = [];
       Object.values(memberMap).forEach(val => {
