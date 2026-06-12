@@ -684,6 +684,7 @@ button{font-family:inherit}
 .bm-chip.attend{background:var(--green);color:var(--paper);border-color:var(--green)}
 .bm-chip.complete-full{background:var(--red);color:var(--paper);border-color:var(--red);font-weight:700}
 .bm-chip.complete-half{background:var(--gold);color:var(--ink);border-color:var(--gold)}
+.bm-chip.complete-prev{background:transparent;color:var(--red);border-color:var(--red);font-weight:700}
 .bm-chip .pct{font-family:'JetBrains Mono',monospace;font-size:9px;opacity:.8;font-weight:400}
 /* 모달 내 한줄평 */
 .bm-review{padding:10px 0;border-bottom:1px dashed var(--line)}
@@ -1105,7 +1106,7 @@ function parseData(rawData, links){
       session: sess.num, sessionRaw: sess.raw, isExtra: sess.isExtra,
       theme: (r[7] && String(r[7]).trim()) || '',
       summary: summaryCol >= 0 && r[summaryCol] ? String(r[summaryCol]).trim() : '',
-      attendance, completion,
+      attendance, completion, completionRaw: {},
       attCount: Object.values(attendance).filter(v=>v===true).length,
       attendees: Object.entries(attendance).filter(([_,v])=>v===true).map(([n])=>n),
       reviews: [],            // '한줄평' 시트에서 채움
@@ -1196,6 +1197,7 @@ function parseExtra(extra){
       if (!b) return;
       Object.entries(memberMap).forEach(([member, val]) => {
         b.completion[member] = parseCompletion(val);
+        b.completionRaw[member] = String(val).trim();
       });
     });
   }
@@ -2363,7 +2365,11 @@ function renderModalBody(book, meta, loading){
           <div class="bm-section">
             <div class="bm-section-label">완독 현황</div>
             <div class="bm-people">
-              ${completedMembers.map(n=>`<span class="bm-chip complete-full">${escapeHtml(n)} <span class="pct">100%</span></span>`).join('')}
+              ${completedMembers.map(n=>{
+                const raw = (book.completionRaw||{})[n];
+                const label = raw && /[가-힣]/.test(raw) && raw !== '완독' ? raw : null;
+                return `<span class="bm-chip ${label?'complete-prev':'complete-full'}">${escapeHtml(n)} <span class="pct">${escapeHtml(label||'100%')}</span></span>`;
+              }).join('')}
               ${partialMembers.map(n=>`<span class="bm-chip complete-half">${escapeHtml(n)} <span class="pct">50%</span></span>`).join('')}
             </div>
           </div>` : ''}
