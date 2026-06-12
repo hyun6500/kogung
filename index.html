@@ -201,11 +201,20 @@ button{font-family:inherit}
   padding:10px 0;border-bottom:1px dashed var(--line);
 }
 .next-item:last-child{border-bottom:none}
+.next-item.linked{cursor:pointer}
+.next-item.linked:hover .t{color:var(--red);text-decoration:underline;text-underline-offset:3px}
 .next-item .n{
   font-family:'Bodoni Moda',serif;font-style:italic;font-size:14px;
   color:var(--red);flex-shrink:0;width:18px;
 }
-.next-item .t{font-family:'Noto Serif KR',serif;font-weight:700;font-size:14px;line-height:1.4}
+.next-item .t{font-family:'Noto Serif KR',serif;font-weight:700;font-size:14px;line-height:1.4;transition:color .15s}
+.next-item .h{
+  margin-left:auto;flex-shrink:0;
+  font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.06em;
+  color:var(--ink-soft);
+}
+.next-item .go{flex-shrink:0;color:var(--red);font-size:15px;line-height:1;opacity:.7}
+.next-item:not(:has(.h)) .go{margin-left:auto}
 .next-empty{color:var(--ink-soft);font-size:13px;font-style:italic;padding:16px 0}
 
 /* ———— KPI ———— */
@@ -879,7 +888,6 @@ button{font-family:inherit}
     <select class="filter-select" id="sortBy">
       <option value="date-desc">최신순</option>
       <option value="date-asc">오래된순</option>
-      <option value="rating">평점순</option>
       <option value="title">제목순</option>
       <option value="author">저자순</option>
     </select>
@@ -1121,7 +1129,8 @@ function parseData(rawData, links){
 // '한줄평' / '모임기록' 시트 파싱 (extra 엔드포인트)
 function parseExtra(extra){
   if (!extra) return;
-  // 멤버: [활동, 비활동] 컬럼 리스트 (1행 헤더) — '비활동' 열의 이름을 수집
+
+  // ── 멤버 탭: 비활동 목록 ──
   if (Array.isArray(extra.members) && extra.members.length > 1) {
     const head = extra.members[0].map(h => String(h||'').trim());
     const inactiveCol = head.findIndex(h => h === '비활동');
@@ -1132,33 +1141,74 @@ function parseExtra(extra){
       });
     }
   }
-  // 한줄평: [no, 멤버, 별점, 한줄평] (1행 헤더)
-  if (Array.isArray(extra.reviews) && extra.reviews.length > 1) {
-    HAS_REVIEWS = true;
-    extra.reviews.slice(1).forEach(r => {
-      const no = r[0] != null && r[0] !== '' ? Math.floor(Number(r[0])) : null;
-      const member = r[1] ? String(r[1]).trim() : '';
-      const rating = parseRating(r[2]);
-      const text = r[3] ? String(r[3]).trim() : '';
-      if (no == null || (!text && rating == null)) return;
-      REVIEWS.push({no, member, rating, text, _ts: REVIEWS.length});
-    });
-  }
-  // 모임기록: [no, 사진, 기록] (1행 헤더)
-  if (Array.isArray(extra.records) && extra.records.length > 1) {
-    HAS_RECORDS = true;
-    extra.records.slice(1).forEach(r => {
+
+  // 와이드 시트 공통 파서: [no, 도서명, 호스트, 멤버A, 멤버B, ...] 구조
+  function parseWideSheet(rows) {
+    if (!Array.isArray(rows) || rows.length < 2) return {};
+    const head = rows[0].map(h => String(h||'').trim());
+    const memberCols = [];
+    for (let i = 3; i < head.length; i++) {
+      if (head[i]) memberCols.push({ idx: i, name: head[i] });
+    }
+    const map = {};
+    rows.slice(1).forEach(r => {
       const no = r[0] != null && r[0] !== '' ? Math.floor(Number(r[0])) : null;
       if (no == null) return;
-      const photos = r[1] ? String(r[1]).split(/[\n,]/).map(s=>s.trim()).filter(Boolean).map(normalizePhotoUrl) : [];
-      const text = r[2] ? String(r[2]).trim() : '';
-      if (!photos.length && !text) return;
-      if (!RECORDS[no]) RECORDS[no] = {photos:[], text:''};
-      RECORDS[no].photos.push(...photos);
-      if (text) RECORDS[no].text += (RECORDS[no].text ? '\n\n' : '') + text;
+      memberCols.forEach(({ idx, name }) => {
+        const val = r[idx];
+        if (val == null || val === '') return;
+        if (!map[no]) map[no] = {};
+        map[no][name] = val;
+      });
+    });
+    return map;
+  }
+
+  // ── 한줄평 탭: [no, 도서명, 호스트, 멤버...] ──
+  if (Array.isArray(extra.reviews) && extra.reviews.length > 1) {
+    const map = parseWideSheet(extra.reviews);
+    if (Object.keys(map).length) {
+      HAS_REVIEWS = true;
+      Object.entries(map).forEach(([no, memberMap]) => {
+        Object.entries(memberMap).forEach(([member, text]) => {
+          const t = String(text).trim();
+          if (!t) return;
+          REVIEWS.push({ no: Number(no), member, rating: null, text: t, _ts: REVIEWS.length });
+        });
+      });
+    }
+  }
+
+  // ── 사진 탭: [no, 도서명, 호스트, 멤버...] — 셀에 URL(쉼표/줄바꿈 구분) ──
+  if (Array.isArray(extra.photos) && extra.photos.length > 1) {
+    const map = parseWideSheet(extra.photos);
+    Object.entries(map).forEach(([no, memberMap]) => {
+      const allPhotos = [];
+      Object.values(memberMap).forEach(val => {
+        String(val).split(/[\n,]/).map(s=>s.trim()).filter(Boolean)
+          .forEach(u => allPhotos.push(normalizePhotoUrl(u)));
+      });
+      if (!allPhotos.length) return;
+      const n = Number(no);
+      if (!RECORDS[n]) RECORDS[n] = { photos: [], text: '' };
+      RECORDS[n].photos.push(...allPhotos);
     });
   }
-  // 책 객체에 연결
+
+  // ── 녹취록 탭: [no, 도서명, 호스트, 녹취록 텍스트] ──
+  if (Array.isArray(extra.transcripts) && extra.transcripts.length > 1) {
+    extra.transcripts.slice(1).forEach(r => {
+      const no = r[0] != null && r[0] !== '' ? Math.floor(Number(r[0])) : null;
+      if (no == null) return;
+      const text = r[3] ? String(r[3]).trim() : '';
+      if (!text) return;
+      if (!RECORDS[no]) RECORDS[no] = { photos: [], text: '' };
+      RECORDS[no].text += (RECORDS[no].text ? '\n\n' : '') + text;
+    });
+  }
+  if (Object.keys(RECORDS).length) HAS_RECORDS = true;
+
+  // ── 책 객체에 연결 ──
   const byNo = {};
   BOOKS.forEach(b => { if (b.no != null) byNo[Math.floor(b.no)] = b; });
   REVIEWS.forEach(rv => {
@@ -1166,13 +1216,10 @@ function parseExtra(extra){
     if (b) b.reviews.push(rv);
   });
   Object.entries(RECORDS).forEach(([no, rec]) => {
-    const b = byNo[no];
+    const b = byNo[Number(no)];
     if (b) b.record = rec;
   });
-  BOOKS.forEach(b => {
-    const rated = b.reviews.filter(r => r.rating != null);
-    if (rated.length) b.avgRating = rated.reduce((a,r)=>a+r.rating,0) / rated.length;
-  });
+  // 별점 없는 구조이므로 avgRating은 산출하지 않음
 }
 
 // 구글 드라이브 공유 링크 → 표시 가능한 이미지 URL
@@ -1386,14 +1433,25 @@ function renderHero(){
   });
   observeCovers(el);
 
-  // 다음에 읽을 책 큐
+  // 다음에 읽을 책 큐 — 시트에서 최근 모임(날짜 있는 행)에 가까운 순서로 표시
   const nq = document.getElementById('nextQueue');
   if (TBR.length) {
-    nq.innerHTML = TBR.map((b,i) => `
-      <div class="next-item">
+    const queue = [...TBR].reverse();  // 시트 위→아래 = 먼→가까운 이므로 반전
+    nq.innerHTML = queue.map((b,i) => `
+      <div class="next-item${b.link?' linked':''}"${b.link?` data-open-idx="${b.idx}" role="button" tabindex="0"`:''}>
         <span class="n">${i+1}</span>
         <span class="t">${escapeHtml(b.title)}</span>
+        ${b.host ? `<span class="h">${escapeHtml(b.host)}</span>` : ''}
+        ${b.link ? `<span class="go">›</span>` : ''}
       </div>`).join('');
+    nq.querySelectorAll('.next-item.linked').forEach(item => {
+      const open = () => {
+        const b = ALL_EVENTS.find(e => e.idx === parseInt(item.dataset.openIdx,10));
+        if (b) openBookModal(b);
+      };
+      item.addEventListener('click', open);
+      item.addEventListener('keydown', e => { if (e.key==='Enter'||e.key===' ') { e.preventDefault(); open(); } });
+    });
   } else {
     nq.innerHTML = `<div class="next-empty">시트 맨 위(날짜 없는 행)에 도서명을 적어두면<br>여기 미리보기로 나타납니다.</div>`;
   }
@@ -1455,8 +1513,8 @@ function renderReviewFeed(){
     el.innerHTML = `
       <div class="empty-guide">
         아직 한줄평이 없습니다.<br>
-        구글 시트에 <b>「한줄평」</b> 탭을 만들고<br>
-        <span class="mono">no · 멤버 · 별점 · 한줄평</span> 형식으로 적으면<br>
+        구글 시트 <b>「한줄평」</b> 탭에<br>
+        멤버별 열에 한줄평을 입력하면<br>
         이곳과 각 책 상세에 자동으로 나타납니다.
       </div>`;
     return;
@@ -1743,7 +1801,6 @@ function renderBookList(){
   });
   if (sort==='date-desc') list.sort((a,b)=>(b.date||0)-(a.date||0));
   else if (sort==='date-asc') list.sort((a,b)=>(a.date||0)-(b.date||0));
-  else if (sort==='rating') list.sort((a,b)=>(b.avgRating??-1)-(a.avgRating??-1));
   else if (sort==='title') list.sort((a,b)=>a.title.localeCompare(b.title,'ko'));
   else if (sort==='author') list.sort((a,b)=>a.author.localeCompare(b.author,'ko'));
   document.getElementById('filterCount').textContent = list.length;
@@ -1888,7 +1945,7 @@ function renderMembers(){
   document.getElementById('membersGrid').innerHTML = MEMBER_STATS.map(m => `
     <div class="member-card" data-member="${escapeAttr(m.name)}">
       <div class="mc-head">
-        <span class="mc-avatar">${escapeHtml(m.name[0])}</span>
+        <span class="mc-avatar">${escapeHtml(m.name.length >= 2 ? m.name.slice(-2,-1) : m.name[0])}</span>
         <div>
           <div class="mc-name">${escapeHtml(m.name)}${isInactive(m.name)?inactiveChip():''}</div>
           ${m.streak >= 2 ? `<div class="mc-streak">🔥 ${m.streak}연속 출석 중</div>` : ''}
